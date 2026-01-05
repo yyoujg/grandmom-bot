@@ -1,0 +1,19 @@
+{
+  "name": "discord-fun-bot",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node bot.js",
+    "register": "node registerCommands.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord.js": "^14.23.2",
+    "dotenv": "^17.2.3",
+    "node-cron": "^4.2.1"
+  }
+}
