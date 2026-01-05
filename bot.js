@@ -105,12 +105,14 @@ function computeCommonFree(weekdayKey) {
   return common;
 }
 
+// ...위 코드 동일
+
 function buildTodayMessage(date = new Date()) {
   const wd = WEEKDAYS[date.getDay()];
   const wdKr = WEEKDAYS_KR[wd];
 
   const lines = [];
-  lines.push(`📅 오늘(${wdKr}) 게임 가능 시간`);
+  lines.push(`📅 오늘(${wdKr}) 게임 시간 보자꾸나`);
 
   for (const key of Object.keys(SCHEDULE)) {
     const name = SCHEDULE[key].name;
@@ -119,44 +121,30 @@ function buildTodayMessage(date = new Date()) {
   }
 
   const common = computeCommonFree(wd);
-  lines.push(`\n✅ 공통 가능: ${formatIntervals(common)}`);
+  lines.push(`\n✅ 셋이 같이 되는 시간: ${formatIntervals(common)}`);
+
+  // 공통 시간이 없을 때 한 줄 더
+  if (!common.length) {
+    lines.push(`할매가 보기엔 오늘은 각자 쉬는 게 낫겠다.`);
+  }
 
   return lines.join("\n");
 }
 
 function buildWeekMessage() {
   const lines = [];
-  lines.push(`📆 이번 주 공통 게임 가능 시간(고정 스케줄 기준)`);
+  lines.push(`📆 이번 주에 셋이 같이 되는 시간만 추려줄게`);
 
   for (const wd of ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]) {
     const common = computeCommonFree(wd);
     lines.push(`- ${WEEKDAYS_KR[wd]}: ${formatIntervals(common)}`);
   }
 
+  lines.push(`\n필요하면 “오늘”로 다시 물어봐라. 할매가 딱 정리해준다.`);
   return lines.join("\n");
 }
-// ====== [게임 스케줄 유틸 끝] ======
 
-async function fetchWeather(cityRaw) {
-  const city = cityRaw || process.env.WEATHER_DEFAULT_CITY || "Seoul";
-  const key = process.env.WEATHER_API_KEY;
-  const units = process.env.WEATHER_UNITS || "metric";
-  const lang = process.env.WEATHER_LANG || "kr";
-
-  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${key}&units=${units}&lang=${lang}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Weather API error: ${res.status}`);
-  const w = await res.json();
-
-  const name = w.name;
-  const desc = w.weather?.[0]?.description || "날씨 정보";
-  const temp = Math.round(w.main?.temp);
-  const feels = Math.round(w.main?.feels_like);
-  const hum = w.main?.humidity;
-  const wind = w.wind?.speed;
-
-  return `현재 ${name} 날씨: ${desc}, ${temp}°C (체감 ${feels}°C), 습도 ${hum}%, 바람 ${wind} m/s`;
-}
+// ...fetchWeather 동일
 
 client.once("ready", () => {
   console.log(`✅ 로그인: ${client.user.tag}`);
@@ -168,8 +156,9 @@ client.once("ready", () => {
         const channelId = process.env.WEATHER_CHANNEL_ID;
         if (!channelId) return console.warn("WEATHER_CHANNEL_ID 미설정");
         const ch = await client.channels.fetch(channelId);
+
         const msg = await fetchWeather(process.env.WEATHER_DEFAULT_CITY);
-        await ch.send(`아침 7시 날씨 알림\n${msg}`);
+        await ch.send(`🌤️ 할매 아침 날씨다\n${msg}\n밖에 나가면 옷 챙겨라.`);
       } catch (e) {
         console.error("날씨 알림 오류:", e);
       }
@@ -183,25 +172,29 @@ client.on("interactionCreate", async (interaction) => {
 
   if (interaction.commandName === "lunch") {
     const menu = pick(LUNCH);
-    await interaction.reply(`오늘의 점심 추천: **${menu}**`);
+    await interaction.reply(`🍚 점심은 이거 먹어라: **${menu}**\n고민은 여기서 끝.`);
     return;
   }
 
   if (interaction.commandName === "weather") {
     await interaction.deferReply();
     try {
-      const city = interaction.options.getString("city") || process.env.WEATHER_DEFAULT_CITY || "Seoul";
+      const city =
+        interaction.options.getString("city") ||
+        process.env.WEATHER_DEFAULT_CITY ||
+        "Seoul";
       const msg = await fetchWeather(city);
-      await interaction.editReply(msg);
+      await interaction.editReply(`🌦️ 날씨 물어봤지?\n${msg}`);
     } catch (e) {
-      await interaction.editReply("날씨 정보를 가져오지 못했습니다. 도시명을 바꾸거나 잠시 후 다시 시도하세요.");
+      await interaction.editReply(
+        "날씨가 말을 안 듣는다. 도시명을 다시 넣어보거나 잠깐 있다가 해봐라."
+      );
     }
     return;
   }
 
-  // ====== [추가] /game ======
   if (interaction.commandName === "game") {
-    const mode = interaction.options.getString("mode") || "today"; // today | week
+    const mode = interaction.options.getString("mode") || "today";
     if (mode === "week") {
       await interaction.reply(buildWeekMessage());
       return;
