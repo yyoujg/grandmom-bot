@@ -109,3 +109,22 @@ export const SCHEDULE = {
     },
   },
 };
+
+
+// data.js
+export const USERS = {
+  youngjin: { name: "영진", id: "411236144219553792" },
+  minsu: { name: "민수", id: "372007150966538241" },
+  youjung: { name: "유정", id: "837984030745165905" },
+  myeongjae: { name: "명재", id: "272960214796468224" },
+};
+
+export const USER_KEYS = Object.keys(USERS);
+
+export function userKeyFromDiscordId(discordUserId) {
+  return USER_KEYS.find((k) => USERS[k].id === discordUserId) || null;
+}
+
+export function userNameFromKey(userKey) {
+  return USERS[userKey]?.name ?? userKey;
+}
