@@ -22,17 +22,7 @@ const commands = [
   // /nonsense
   new SlashCommandBuilder()
     .setName("nonsense")
-    .setDescription("할매가 넌센스 퀴즈 문제 하나 낸다 아이가.")
-    .addStringOption((o) =>
-      o
-        .setName("mode")
-        .setDescription("랜덤/순서대로 (기본: 랜덤)")
-        .setRequired(false)
-        .addChoices(
-          { name: "랜덤", value: "random" },
-          { name: "순서대로", value: "seq" }
-        )
-    ),
+    .setDescription("할매가 넌센스 퀴즈 문제 하나 낸다 아이가."),
 
   // /answer
   new SlashCommandBuilder()
