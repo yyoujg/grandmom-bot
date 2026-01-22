@@ -12,7 +12,8 @@ import {
   ButtonStyle,
 } from "discord.js";
 
-import { FOOD_CATEGORIES, NONSENSE_QUIZ } from "./data.js";
+import { FOOD_CATEGORIES, NONSENSE_QUIZ, SCHEDULE, WORK_ROLES } from "./data.js";
+import { MESSAGES } from "./messages.js";
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
@@ -67,7 +68,6 @@ async function saveStore(store) {
 
 function ensureStoreShape(store) {
   const s = store && typeof store === "object" ? store : {};
-  if (!Array.isArray(s.busy)) s.busy = [];
   if (!Array.isArray(s.proposals)) s.proposals = [];
   if (!s.nonsense || typeof s.nonsense !== "object") s.nonsense = {};
   if (!s.nonsense.byChannel || typeof s.nonsense.byChannel !== "object")
@@ -119,8 +119,8 @@ function parseGoDay(dayRaw) {
   const todayParts = toKstDateParts(new Date());
   const today = `${todayParts.yyyy}-${todayParts.mm}-${todayParts.dd}`;
 
-  if (!raw || raw === "오늘" || raw.toLowerCase() === "today") return today;
-  if (raw === "내일" || raw.toLowerCase() === "tomorrow") return addDaysKst(today, 1);
+  if (!raw || raw === MESSAGES.date.today || raw.toLowerCase() === "today") return today;
+  if (raw === MESSAGES.date.tomorrow || raw.toLowerCase() === "tomorrow") return addDaysKst(today, 1);
 
   if (!/^\d{4}-\d{2}-\d{2}$/.test(raw)) return null;
 
@@ -133,51 +133,17 @@ function parseGoDay(dayRaw) {
 }
 
 // =========================
-// Busy (/busy)
-// =========================
-function formatBusyItem(x) {
-  const nm = userNameFromKey(x.userKey);
-  const reason = x.reason ? ` (${x.reason})` : "";
-  return `- [${x.id}] ${nm} ${x.date} ${x.start}~${x.end}${reason}`;
-}
-
-// start가 busy 구간에 포함되면 경고
-async function computeConflictsAtStart(date, start) {
-  const store = await loadStore();
-  const s = normalizeTimeToMin(start);
-
-  const conflicts = {};
-  for (const k of USER_KEYS) conflicts[k] = [];
-
-  const sameDate = store.busy.filter((b) => b.date === date);
-
-  for (const k of USER_KEYS) {
-    const slots = sameDate.filter((b) => b.userKey === k);
-    for (const b of slots) {
-      const bs = normalizeTimeToMin(b.start);
-      const be = normalizeTimeToMin(b.end);
-      if (bs <= s && s < be) {
-        const reason = b.reason ? `(${b.reason})` : "";
-        conflicts[k].push(`${b.start}~${b.end}${reason}`);
-      }
-    }
-  }
-
-  return conflicts;
-}
-
-// =========================
 // /go (시작시간 제안 + 수락/거절)
 // =========================
 function buildGoButtons(proposalId) {
   const row = new ActionRowBuilder().addComponents(
     new ButtonBuilder()
       .setCustomId(`go:${proposalId}:ACCEPT`)
-      .setLabel("간다")
+      .setLabel(MESSAGES.go.buttonAccept)
       .setStyle(ButtonStyle.Success),
     new ButtonBuilder()
       .setCustomId(`go:${proposalId}:DECLINE`)
-      .setLabel("못 간다")
+      .setLabel(MESSAGES.go.buttonDecline)
       .setStyle(ButtonStyle.Danger)
   );
   return [row];
@@ -185,15 +151,15 @@ function buildGoButtons(proposalId) {
 
 function buildGoMessage({ date, start }, responses, conflicts) {
   const lines = [];
-  lines.push(`할매가 시간 하나 딱 제안한다 아이가`);
-  lines.push(`- 날짜: ${date}`);
-  lines.push(`- 시작: ${start}\n`);
+  lines.push(MESSAGES.go.proposalTitle);
+  lines.push(`- ${MESSAGES.date.dateLabel}: ${date}`);
+  lines.push(`- ${MESSAGES.date.startLabel}: ${start}\n`);
 
-  lines.push(`수락/거절 눌러라`);
+  lines.push(MESSAGES.go.askResponse);
   for (const k of USER_KEYS) {
     const nm = userNameFromKey(k);
     const st = responses[k] ?? "PENDING";
-    const stKr = st === "ACCEPT" ? "수락" : st === "DECLINE" ? "거절" : "대기";
+    const stKr = st === "ACCEPT" ? MESSAGES.go.statusAccept : st === "DECLINE" ? MESSAGES.go.statusDecline : MESSAGES.go.statusPending;
     const warn = conflicts[k]?.length ? ` · 겹침: ${conflicts[k].join(", ")}` : "";
     lines.push(`- ${nm}: ${stKr}${warn}`);
   }
@@ -201,9 +167,9 @@ function buildGoMessage({ date, start }, responses, conflicts) {
   const allAccepted = USER_KEYS.every((k) => (responses[k] ?? "PENDING") === "ACCEPT");
   const anyDeclined = USER_KEYS.some((k) => (responses[k] ?? "PENDING") === "DECLINE");
 
-  if (allAccepted) lines.push(`\n고! 그 시간에 모이라.`);
-  else if (anyDeclined) lines.push(`\n안 된다. 시간 다시 잡아라.`);
-  else lines.push(`\n아직 응답 안 한 사람 있다.`);
+  if (allAccepted) lines.push(`\n${MESSAGES.go.allAccepted}`);
+  else if (anyDeclined) lines.push(`\n${MESSAGES.go.anyDeclined}`);
+  else lines.push(`\n${MESSAGES.go.waitingResponse}`);
 
   return lines.join("\n");
 }
@@ -234,9 +200,9 @@ function getMealPool(mealType) {
 }
 
 function mealLabel(mealType) {
-  if (mealType === "dinner") return "저녁";
-  if (mealType === "snack") return "간식";
-  return "점심";
+  if (mealType === "dinner") return MESSAGES.meal.dinner;
+  if (mealType === "snack") return MESSAGES.meal.snack;
+  return MESSAGES.meal.lunch;
 }
 
 // =========================
@@ -257,15 +223,19 @@ function pickNonsenseItem() {
 
 function buildNonsenseQuestionText(item) {
   return [
-    "넌센스 퀴즈다 아이가",
-    `- 문제: ${item.q}`,
+    MESSAGES.nonsense.quizTitle,
+    `- ${MESSAGES.nonsenseDetail.problemLabel}: ${item.q}`,
     "",
-    "정답은 /answer로 넣어라. (예: /answer text:모카우)",
+    MESSAGES.nonsense.answerInstruction,
   ].join("\n");
 }
 
 function buildNonsenseCorrectText(item, userMention) {
-  return ["정답이다 아이가.", `- 맞춘 사람: ${userMention}`, `- 정답: ${item.a}`].join("\n");
+  return [
+    MESSAGES.nonsense.correct,
+    `- ${MESSAGES.nonsenseDetail.correctPersonLabel}: ${userMention}`,
+    `- ${MESSAGES.nonsenseDetail.answerLabel}: ${item.a}`,
+  ].join("\n");
 }
 
 async function postNonsenseQuestion(channelId) {
@@ -300,6 +270,194 @@ async function postNonsenseQuestion(channelId) {
 }
 
 // =========================
+// 근무 관리 (역할 토글 + 채널 공지)
+// =========================
+function getDayOfWeek(date = new Date()) {
+  const kst = new Date(date.getTime() + 9 * 60 * 60 * 1000);
+  const day = kst.getUTCDay();
+  const dayMap = { 0: "sun", 1: "mon", 2: "tue", 3: "wed", 4: "thu", 5: "fri", 6: "sat" };
+  return dayMap[day];
+}
+
+function getCurrentTimeInMin() {
+  const kst = new Date(new Date().getTime() + 9 * 60 * 60 * 1000);
+  const h = kst.getUTCHours();
+  const m = kst.getUTCMinutes();
+  return h * 60 + m;
+}
+
+function isWorkingNow(userKey) {
+  const schedule = SCHEDULE[userKey];
+  if (!schedule) return false;
+
+  const dayOfWeek = getDayOfWeek();
+  const todaySlots = schedule.weeklyBusy[dayOfWeek] || [];
+  if (todaySlots.length === 0) return false;
+
+  const currentMin = getCurrentTimeInMin();
+
+  for (const [start, end] of todaySlots) {
+    const startMin = normalizeTimeToMin(start);
+    const endMin = normalizeTimeToMin(end);
+    if (currentMin >= startMin && currentMin < endMin) {
+      return true;
+    }
+  }
+  return false;
+}
+
+async function ensureRoleExists(guild, roleName, colorHex) {
+  let role = guild.roles.cache.find((r) => r.name === roleName);
+  if (role) return role;
+
+  const color = parseInt(colorHex.replace("#", ""), 16);
+  role = await guild.roles.create({
+    name: roleName,
+    color: color,
+    mentionable: false,
+  });
+  return role;
+}
+
+async function toggleWorkRoles(guild, userKey, shouldHaveRoles) {
+  const userMeta = USER_META[userKey];
+  if (!userMeta) return false;
+
+  const member = await guild.members.fetch(userMeta.discordId).catch(() => null);
+  if (!member) return false;
+
+  const commonRole = await ensureRoleExists(guild, WORK_ROLES.common.name, WORK_ROLES.common.color);
+  const personalRole = await ensureRoleExists(guild, WORK_ROLES[userKey].name, WORK_ROLES[userKey].color);
+
+  if (shouldHaveRoles) {
+    if (!member.roles.cache.has(commonRole.id)) {
+      await member.roles.add(commonRole);
+    }
+    if (!member.roles.cache.has(personalRole.id)) {
+      await member.roles.add(personalRole);
+    }
+  } else {
+    if (member.roles.cache.has(commonRole.id)) {
+      await member.roles.remove(commonRole);
+    }
+    if (member.roles.cache.has(personalRole.id)) {
+      await member.roles.remove(personalRole);
+    }
+  }
+  return true;
+}
+
+async function checkAndUpdateWorkRoles(guild, silent = false) {
+  const changes = [];
+  for (const userKey of ["youjung", "youngjin", "myeongjae"]) {
+    const isWorking = isWorkingNow(userKey);
+    const userMeta = USER_META[userKey];
+    if (!userMeta) continue;
+
+    const member = await guild.members.fetch(userMeta.discordId).catch(() => null);
+    if (!member) continue;
+
+    const commonRole = await ensureRoleExists(guild, WORK_ROLES.common.name, WORK_ROLES.common.color);
+    const personalRole = await ensureRoleExists(guild, WORK_ROLES[userKey].name, WORK_ROLES[userKey].color);
+
+    await guild.roles.fetch();
+    await member.roles.fetch();
+
+    const hasCommonRole = member.roles.cache.has(commonRole.id);
+    const hasPersonalRole = member.roles.cache.has(personalRole.id);
+    const currentlyHasRoles = hasCommonRole && hasPersonalRole;
+
+    if (isWorking && !currentlyHasRoles) {
+      await toggleWorkRoles(guild, userKey, true);
+      if (!silent) {
+        changes.push({ userKey, action: "start" });
+      }
+    } else if (!isWorking && currentlyHasRoles) {
+      await toggleWorkRoles(guild, userKey, false);
+      if (!silent) {
+        changes.push({ userKey, action: "end" });
+      }
+    }
+  }
+  return changes;
+}
+
+async function sendWorkAnnouncement(channel, userKey, action) {
+  const userName = USER_META[userKey]?.name || userKey;
+  const timeStr = new Date().toLocaleTimeString("ko-KR", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+
+  if (action === "start") {
+    await channel.send(MESSAGES.work.start(userName, timeStr));
+  } else if (action === "end") {
+    await channel.send(MESSAGES.work.end(userName, timeStr));
+  }
+}
+
+function getTodaySchedule() {
+  const dayOfWeek = getDayOfWeek();
+  const schedule = [];
+
+  for (const userKey of ["youjung", "youngjin", "myeongjae"]) {
+    const userSchedule = SCHEDULE[userKey];
+    if (!userSchedule) continue;
+
+    const todaySlots = userSchedule.weeklyBusy[dayOfWeek] || [];
+    if (todaySlots.length === 0) continue;
+
+    const userName = userSchedule.name;
+    for (const [start, end] of todaySlots) {
+      schedule.push({ name: userName, start, end });
+    }
+  }
+
+  return schedule;
+}
+
+async function sendDailyScheduleSummary(channel) {
+  const schedule = getTodaySchedule();
+  if (schedule.length === 0) return;
+
+  const lines = [MESSAGES.work.scheduleTitle];
+  for (const item of schedule) {
+    lines.push(MESSAGES.work.scheduleItem(item.name, item.start, item.end));
+  }
+
+  await channel.send(lines.join("\n"));
+}
+
+function getWorkStartTimes() {
+  const dayOfWeek = getDayOfWeek();
+  const startTimes = [];
+
+  for (const userKey of ["youjung", "youngjin", "myeongjae"]) {
+    const userSchedule = SCHEDULE[userKey];
+    if (!userSchedule) continue;
+
+    const todaySlots = userSchedule.weeklyBusy[dayOfWeek] || [];
+    if (todaySlots.length === 0) continue;
+
+    for (const [start] of todaySlots) {
+      startTimes.push({ userKey, userName: userSchedule.name, start });
+    }
+  }
+
+  return startTimes;
+}
+
+async function sendWeatherForWorkStart(channel, userKey, userName) {
+  try {
+    const msg = await fetchWeather(process.env.WEATHER_DEFAULT_CITY);
+    await channel.send(`${MESSAGES.work.weatherPrefix(userName)}\n${msg}`);
+  } catch (e) {
+    console.error(MESSAGES.console.weatherError, e);
+  }
+}
+
+// =========================
 // 날씨 (/weather) + 07시 자동알림
 // =========================
 async function fetchWeather(cityRaw) {
@@ -308,7 +466,7 @@ async function fetchWeather(cityRaw) {
   const units = process.env.WEATHER_UNITS || "metric";
   const lang = process.env.WEATHER_LANG || "kr";
 
-  if (!key) throw new Error("WEATHER_API_KEY 미설정");
+  if (!key) throw new Error(MESSAGES.weatherDetail.apiKeyError);
 
   const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(
     city
@@ -319,7 +477,7 @@ async function fetchWeather(cityRaw) {
   const w = await res.json();
 
   const name = w.name;
-  const desc = w.weather?.[0]?.description || "날씨 정보";
+  const desc = w.weather?.[0]?.description || MESSAGES.weatherDetail.weatherInfo;
   const temp = Math.round(w.main?.temp);
   const feels = Math.round(w.main?.feels_like);
   const hum = w.main?.humidity;
@@ -327,60 +485,137 @@ async function fetchWeather(cityRaw) {
 
   const nags = [];
   if (Number.isFinite(feels)) {
-    if (feels <= 0) nags.push("체감이 영하라 카이. 옷 얇게 입고 나가면 안 된다.");
-    else if (feels <= 8) nags.push("쌀쌀타. 겉옷 하나 챙겨라.");
-    else if (feels >= 28) nags.push("덥다. 물 안 챙기면 고생한다.");
+    if (feels <= 0) nags.push(MESSAGES.weather.coldWarning);
+    else if (feels <= 8) nags.push(MESSAGES.weather.chillyWarning);
+    else if (feels >= 28) nags.push(MESSAGES.weather.hotWarning);
   }
   if (typeof hum === "number" && hum >= 75)
-    nags.push("습하다. 머리 부스스해도 그건 어쩔 수 없다.");
+    nags.push(MESSAGES.weather.humidWarning);
   if (typeof wind === "number" && wind >= 6)
-    nags.push("바람 센 편이다. 모자 쓰면 날아간다.");
+    nags.push(MESSAGES.weather.windyWarning);
 
-  const nagText = nags.length ? `\n${nags.join(" ")}` : "\n별일 없다. 그래도 조심해서 다녀라.";
+  const nagText = nags.length ? `\n${nags.join(" ")}` : `\n${MESSAGES.weather.normalWarning}`;
 
-  return `지금 ${name} 날씨다: ${desc}, ${temp}°C (체감 ${feels}°C), 습도 ${hum}%, 바람 ${wind} m/s${nagText}`;
+  return MESSAGES.weatherDetail.weatherFormat(name, desc, temp, feels, hum, wind) + nagText;
 }
 
 // =========================
 // ready
 // =========================
-client.once("clientReady", () => {
-  console.log(`✅ 로그인: ${client.user.tag}`);
+client.once("clientReady", async () => {
+  console.log(MESSAGES.console.login(client.user.tag));
 
   const channelId = process.env.CHANNEL_ID;
+  const workChannelId = process.env.WORK_CHANNEL_ID || channelId;
+  const guildId = process.env.GUILD_ID;
+
   if (!channelId) {
-    console.warn("CHANNEL_ID 미설정: 자동 알림(날씨/넌센스) 스킵");
-    return;
+    console.warn(MESSAGES.console.channelIdNotSet);
   }
 
-  // 07:00 날씨
-  cron.schedule(
-    "0 7 * * *",
-    async () => {
-      try {
-        const ch = await client.channels.fetch(channelId);
-        const msg = await fetchWeather(process.env.WEATHER_DEFAULT_CITY);
-        await ch.send(`할매 아침 날씨다 아이가\n${msg}`);
-      } catch (e) {
-        console.error("날씨 알림 오류:", e);
-      }
-    },
-    { timezone: "Asia/Seoul" }
-  );
+  if (!guildId) {
+    console.warn(MESSAGES.console.guildIdNotSet);
+  }
+
+  // 봇 시작 시 초기 상태 동기화
+  if (guildId) {
+    try {
+      const guild = await client.guilds.fetch(guildId);
+      await checkAndUpdateWorkRoles(guild, true);
+      console.log(MESSAGES.console.workRoleSyncComplete);
+    } catch (e) {
+      console.error(MESSAGES.console.workRoleSyncError, e);
+    }
+  }
+
+  // 근무 역할 자동 토글 (1분마다 체크)
+  if (guildId) {
+    cron.schedule(
+      "* * * * *",
+      async () => {
+        try {
+          const guild = await client.guilds.fetch(guildId);
+          const changes = await checkAndUpdateWorkRoles(guild);
+
+          if (changes.length > 0 && workChannelId) {
+            const workChannel = await client.channels.fetch(workChannelId).catch(() => null);
+            if (workChannel) {
+              for (const change of changes) {
+                await sendWorkAnnouncement(workChannel, change.userKey, change.action);
+              }
+            }
+          }
+        } catch (e) {
+          console.error(MESSAGES.console.workRoleToggleError, e);
+        }
+      },
+      { timezone: "Asia/Seoul" }
+    );
+  }
+
+  // 08:30 일정 요약
+  if (workChannelId) {
+    cron.schedule(
+      "30 8 * * *",
+      async () => {
+        try {
+          const workChannel = await client.channels.fetch(workChannelId).catch(() => null);
+          if (workChannel) {
+            await sendDailyScheduleSummary(workChannel);
+          }
+        } catch (e) {
+          console.error(MESSAGES.console.scheduleSummaryError, e);
+        }
+      },
+      { timezone: "Asia/Seoul" }
+    );
+  }
+
+  // 근무 시작 시간에 맞춰 날씨 알림
+  if (channelId) {
+    const weatherTimes = new Set(["09:00", "12:00", "19:00", "20:00", "21:00"]);
+
+    // 각 시간대별로 cron 설정
+    for (const startTime of weatherTimes) {
+      const [hour, minute] = startTime.split(":").map(Number);
+      const cronPattern = `${minute} ${hour} * * *`;
+
+      cron.schedule(
+        cronPattern,
+        async () => {
+          try {
+            const ch = await client.channels.fetch(channelId);
+            const todayStartTimes = getWorkStartTimes();
+
+            for (const { userKey, userName, start } of todayStartTimes) {
+              if (start === startTime) {
+                await sendWeatherForWorkStart(ch, userKey, userName);
+              }
+            }
+          } catch (e) {
+            console.error(MESSAGES.console.weatherError, e);
+          }
+        },
+        { timezone: "Asia/Seoul" }
+      );
+    }
+  }
 
   // 15:00 넌센스 자동 출제
-  cron.schedule(
-    "0 15 * * *",
-    async () => {
-      try {
-        const ok = await postNonsenseQuestion(channelId);
-        if (!ok) console.warn("넌센스 DB 비어있음: NONSENSE_QUIZ 확인 필요");
-      } catch (e) {
-        console.error("넌센스 자동출제 오류:", e);
-      }
-    },
-    { timezone: "Asia/Seoul" }
-  );
+  if (channelId) {
+    cron.schedule(
+      "0 15 * * *",
+      async () => {
+        try {
+          const ok = await postNonsenseQuestion(channelId);
+          if (!ok) console.warn(MESSAGES.console.nonsenseDbEmpty);
+        } catch (e) {
+          console.error(MESSAGES.console.nonsenseAutoError, e);
+        }
+      },
+      { timezone: "Asia/Seoul" }
+    );
+  }
 });
 
 // =========================
@@ -395,12 +630,12 @@ client.on("interactionCreate", async (interaction) => {
       const pool = getMealPool(type);
 
       if (!pool.length) {
-        await interaction.reply("추천할 게 없다 아이가. FOOD_CATEGORIES 데이터부터 확인해라.");
+        await interaction.reply(MESSAGES.lunch.noMenu);
         return;
       }
 
       const menu = pick(pool);
-      await interaction.reply(`${mealLabel(type)}은 이거 묵어라: **${menu}**\n고민은 거기서 끝내라.`);
+      await interaction.reply(`${mealLabel(type)}${MESSAGES.lunch.menuSuffix} **${menu}**\n${MESSAGES.lunch.menuEnd}`);
       return;
     }
 
@@ -413,12 +648,10 @@ client.on("interactionCreate", async (interaction) => {
           process.env.WEATHER_DEFAULT_CITY ||
           "Seoul";
         const msg = await fetchWeather(city);
-        await interaction.editReply(`날씨 궁금했나?\n${msg}`);
+        await interaction.editReply(`${MESSAGES.weather.question}\n${msg}`);
       } catch (e) {
         console.error(e);
-        await interaction.editReply(
-          "날씨가 오늘 영 말을 안 듣는다. 도시명 바꿔보던지, 쪼매 있다가 다시 해봐라."
-        );
+        await interaction.editReply(MESSAGES.weather.error);
       }
       return;
     }
@@ -428,16 +661,16 @@ client.on("interactionCreate", async (interaction) => {
       await interaction.deferReply();
 
       if (!Array.isArray(NONSENSE_QUIZ) || NONSENSE_QUIZ.length === 0) {
-        await interaction.editReply("퀴즈 DB가 비어있다 아이가. data.js의 NONSENSE_QUIZ부터 채워라.");
+        await interaction.editReply(MESSAGES.nonsense.emptyDb);
         return;
       }
 
       try {
         await postNonsenseQuestion(interaction.channelId);
-        await interaction.editReply("문제 냈다 아이가. 위에 올라간 거 보고 맞춰봐라.");
+        await interaction.editReply(MESSAGES.nonsense.questionPosted);
       } catch (e) {
         console.error(e);
-        await interaction.editReply("문제 내는 게 꼬였다. 콘솔 에러 로그부터 확인해라.");
+        await interaction.editReply(MESSAGES.nonsense.questionError);
       }
       return;
     }
@@ -476,7 +709,7 @@ client.on("interactionCreate", async (interaction) => {
       });
 
       if (!result.ok) {
-        await interaction.reply({ content: "지금 문제 없다. /nonsense로 문제부터 내라.", ephemeral: true });
+        await interaction.reply({ content: MESSAGES.nonsense.noQuestion, ephemeral: true });
         return;
       }
 
@@ -487,7 +720,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (result.type === "WRONG") {
         await interaction.reply({
-          content: `틀렸다 아이가. (${result.tries}/2) 다시 생각해봐라.`,
+          content: MESSAGES.nonsense.wrong(result.tries),
           ephemeral: true,
         });
         return;
@@ -495,155 +728,13 @@ client.on("interactionCreate", async (interaction) => {
 
       if (result.type === "REVEAL_TO_USER") {
         await interaction.reply({
-          content: `두 번 틀렸다. 정답 알려준다.\n- 문제: ${result.current.q}\n- 정답: ${result.current.a}`,
+          content: MESSAGES.nonsense.revealAnswer(result.current.q, result.current.a),
           ephemeral: true,
         });
         return;
       }
 
       return;
-    }
-
-    // /busy
-    if (interaction.commandName === "busy") {
-      const sub = interaction.options.getSubcommand();
-      const callerKey = userKeyFromDiscordId(interaction.user.id);
-
-      if (sub === "add") {
-        if (!callerKey) {
-          await interaction.reply({
-            content: "니는 등록된 멤버가 아니라서 못 한다. (영진/민수/유정/명재만 된다)",
-            ephemeral: true,
-          });
-          return;
-        }
-
-        const date = interaction.options.getString("date", true);
-        const start = interaction.options.getString("start", true);
-        const end = interaction.options.getString("end", true);
-        const reason = interaction.options.getString("reason") || "";
-
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !isHHMM(start) || !isHHMM(end)) {
-          await interaction.reply({
-            content: "형식이 이상하다. date=YYYY-MM-DD, start/end=HH:MM으로 넣어라.",
-            ephemeral: true,
-          });
-          return;
-        }
-
-        const s = normalizeTimeToMin(start);
-        const e = normalizeTimeToMin(end);
-        if (!(s < e)) {
-          await interaction.reply({
-            content: "시간이 좀 이상하다. 시작이 끝보다 빨라야 된다 아이가. 다시 넣어라.",
-            ephemeral: true,
-          });
-          return;
-        }
-
-        const id = crypto.randomUUID().slice(0, 8);
-
-        await withStore(async (store) => {
-          store.busy.push({
-            id,
-            userKey: callerKey,
-            date,
-            start,
-            end,
-            reason: reason.trim() || null,
-            createdAt: new Date().toISOString(),
-          });
-        });
-
-        await interaction.reply(
-          `됐다. 박아놨다 아이가.\n${formatBusyItem({
-            id,
-            userKey: callerKey,
-            date,
-            start,
-            end,
-            reason: reason.trim() || null,
-          })}`
-        );
-        return;
-      }
-
-      if (sub === "list") {
-        const user = interaction.options.getString("user"); // optional
-        const targetKey = user || callerKey;
-
-        const store = await loadStore();
-        const list = store.busy
-          .filter((b) => (targetKey ? b.userKey === targetKey : true))
-          .sort((a, b) => (a.date + a.start).localeCompare(b.date + b.start));
-
-        if (!list.length) {
-          await interaction.reply(
-            targetKey
-              ? `없다 아이가. ${userNameFromKey(targetKey)}는 그날그날 비어있네.`
-              : "없다 아이가. 아무도 안 막혀있네."
-          );
-          return;
-        }
-
-        const title = targetKey ? `${userNameFromKey(targetKey)} 못 되는 시간` : `전체 못 되는 시간`;
-        const body = list.map(formatBusyItem).join("\n");
-        await interaction.reply(`${title}\n${body}`);
-        return;
-      }
-
-      if (sub === "remove") {
-        if (!callerKey) {
-          await interaction.reply({
-            content: "니는 등록된 멤버가 아니라서 삭제도 못 한다.",
-            ephemeral: true,
-          });
-          return;
-        }
-
-        const id = interaction.options.getString("id", true);
-        const store = await loadStore();
-        const item = store.busy.find((b) => b.id === id);
-        if (!item) {
-          await interaction.reply({
-            content: "그 번호는 없다 아이가. /busy list로 한번 보고 와라.",
-            ephemeral: true,
-          });
-          return;
-        }
-
-        if (item.userKey !== callerKey) {
-          await interaction.reply({
-            content: "그건 니꺼 아니다. 남의 거 건드리면 안 된다.",
-            ephemeral: true,
-          });
-          return;
-        }
-
-        await withStore(async (s) => {
-          s.busy = s.busy.filter((b) => b.id !== id);
-        });
-
-        await interaction.reply(`지웠다 아이가.\n${formatBusyItem(item)}`);
-        return;
-      }
-
-      if (sub === "clear") {
-        if (!callerKey) {
-          await interaction.reply({
-            content: "니는 등록된 멤버가 아니라서 싹 비우는 것도 못 한다.",
-            ephemeral: true,
-          });
-          return;
-        }
-
-        await withStore(async (s) => {
-          s.busy = s.busy.filter((b) => b.userKey !== callerKey);
-        });
-
-        await interaction.reply(`${userNameFromKey(callerKey)} 스케줄, 할매가 싹 비워놨다.`);
-        return;
-      }
     }
 
     // /go (추천 없음, 시작시간만)
@@ -653,7 +744,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (!date) {
         await interaction.reply({
-          content: "day 입력이 좀 이상하다. '오늘', '내일', 'YYYY-MM-DD' 중 하나로 넣어라.",
+          content: MESSAGES.go.invalidDay,
           ephemeral: true,
         });
         return;
@@ -663,7 +754,7 @@ client.on("interactionCreate", async (interaction) => {
 
       if (!isHHMM(start) || start === "24:00") {
         await interaction.reply({
-          content: "start는 HH:MM으로 넣어라. (24:00 제외) 예: 19:30",
+          content: MESSAGES.go.invalidStart,
           ephemeral: true,
         });
         return;
@@ -673,7 +764,7 @@ client.on("interactionCreate", async (interaction) => {
       const responses = {};
       for (const k of USER_KEYS) responses[k] = "PENDING";
 
-      const conflicts = await computeConflictsAtStart(date, start);
+      const conflicts = {};
       const content = buildGoMessage({ date, start }, responses, conflicts);
       const rows = buildGoButtons(proposalId);
 
@@ -707,7 +798,7 @@ client.on("interactionCreate", async (interaction) => {
     const callerKey = userKeyFromDiscordId(interaction.user.id);
     if (!callerKey) {
       await interaction.reply({
-        content: "니는 등록 멤버가 아니라서 참여 못 한다.",
+        content: MESSAGES.go.notRegisteredMember,
         ephemeral: true,
       });
       return;
@@ -733,13 +824,13 @@ client.on("interactionCreate", async (interaction) => {
 
     if (!updated) {
       await interaction.reply({
-        content: "그 제안은 없다 아이가. 새로 잡아라.",
+        content: MESSAGES.go.proposalNotFound,
         ephemeral: true,
       });
       return;
     }
 
-    const conflicts = await computeConflictsAtStart(updated.date, updated.start);
+    const conflicts = {};
     const content = buildGoMessage({ date: updated.date, start: updated.start }, updated.responses, conflicts);
 
     const disabled = updated.status !== "OPEN";

@@ -76,7 +76,6 @@ export const FOOD_CATEGORIES = {
 export const SCHEDULE = {
   youjung: {
     name: "유정",
-    // 기본: 월~금 09:00~18:00 근무(10시까지 유연근무 가능은 '가능시간' 계산에 반영 안 함. 고정 스케줄로만 잡음)
     weeklyBusy: {
       mon: [["09:00", "18:00"]],
       tue: [["09:00", "18:00"]],
@@ -86,8 +85,6 @@ export const SCHEDULE = {
       sat: [],
       sun: [],
     },
-    // 특정 날짜 예외(예: 24일 병원) - 월 단위 반복이 아니라면 실제 날짜(YYYY-MM-DD)로 관리 권장
-    // 우선 "매달 24일"로 가정하지 않고, 명령어로 날짜 입력해서 조회할 수 있게 구현(아래 커맨드 참고)
   },
 
   youngjin: {
@@ -114,6 +111,25 @@ export const SCHEDULE = {
       sat: [],
       sun: [],
     },
+  },
+};
+
+export const WORK_ROLES = {
+  common: {
+    name: "🕘 근무중",
+    color: "#4A4A4A",
+  },
+  youjung: {
+    name: "💻 개발중",
+    color: "#4C6EF5",
+  },
+  youngjin: {
+    name: "☕ 영진-바쁨",
+    color: "#C49A6C",
+  },
+  myeongjae: {
+    name: "☕ 명재-바쁨",
+    color: "#A97142",
   },
 };
 
