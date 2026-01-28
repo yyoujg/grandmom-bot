@@ -15,7 +15,10 @@ import {
 import { FOOD_CATEGORIES, NONSENSE_QUIZ, SCHEDULE, WORK_ROLES } from "./data.js";
 import { MESSAGES } from "./messages.js";
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+// ✅ 근무 역할/멤버 fetch 안정화
+const client = new Client({
+  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
+});
 
 // =========================
 // 설정(고정 멤버/DB 경로)
@@ -23,7 +26,6 @@ const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 const STORE_PATH = path.resolve(process.cwd(), "store.json");
 
 // 친구 목록 (고정)
-// - 이전에 주신 디스코드 ID 기준
 const USER_KEYS = ["youngjin", "minsu", "youjung", "myeongjae"];
 
 const USER_META = {
@@ -159,7 +161,12 @@ function buildGoMessage({ date, start }, responses, conflicts) {
   for (const k of USER_KEYS) {
     const nm = userNameFromKey(k);
     const st = responses[k] ?? "PENDING";
-    const stKr = st === "ACCEPT" ? MESSAGES.go.statusAccept : st === "DECLINE" ? MESSAGES.go.statusDecline : MESSAGES.go.statusPending;
+    const stKr =
+      st === "ACCEPT"
+        ? MESSAGES.go.statusAccept
+        : st === "DECLINE"
+        ? MESSAGES.go.statusDecline
+        : MESSAGES.go.statusPending;
     const warn = conflicts[k]?.length ? ` · 겹침: ${conflicts[k].join(", ")}` : "";
     lines.push(`- ${nm}: ${stKr}${warn}`);
   }
@@ -299,56 +306,55 @@ function isWorkingNow(userKey) {
   for (const [start, end] of todaySlots) {
     const startMin = normalizeTimeToMin(start);
     const endMin = normalizeTimeToMin(end);
-    if (currentMin >= startMin && currentMin < endMin) {
-      return true;
-    }
+    if (currentMin >= startMin && currentMin < endMin) return true;
   }
   return false;
 }
 
+// ✅ 경고 제거: color -> colors
 async function ensureRoleExists(guild, roleName, colorHex) {
   let role = guild.roles.cache.find((r) => r.name === roleName);
   if (role) return role;
 
-  const color = parseInt(colorHex.replace("#", ""), 16);
+  const primary = parseInt(String(colorHex).replace("#", ""), 16);
+
   role = await guild.roles.create({
     name: roleName,
-    color: color,
+    colors: { primary },
     mentionable: false,
+    hoist: false,
   });
+
   return role;
 }
 
-async function toggleWorkRoles(guild, userKey, shouldHaveRoles) {
-  const userMeta = USER_META[userKey];
-  if (!userMeta) return false;
+// ✅ member를 받아서 중복 fetch 제거
+async function toggleWorkRoles(member, userKey, shouldHaveRoles) {
+  const guild = member.guild;
 
-  const member = await guild.members.fetch(userMeta.discordId).catch(() => null);
-  if (!member) return false;
+  const commonRoleDef = WORK_ROLES?.common;
+  const personalRoleDef = WORK_ROLES?.[userKey];
+  if (!commonRoleDef || !personalRoleDef) return false;
 
-  const commonRole = await ensureRoleExists(guild, WORK_ROLES.common.name, WORK_ROLES.common.color);
-  const personalRole = await ensureRoleExists(guild, WORK_ROLES[userKey].name, WORK_ROLES[userKey].color);
+  const commonRole = await ensureRoleExists(guild, commonRoleDef.name, commonRoleDef.color);
+  const personalRole = await ensureRoleExists(guild, personalRoleDef.name, personalRoleDef.color);
 
   if (shouldHaveRoles) {
-    if (!member.roles.cache.has(commonRole.id)) {
-      await member.roles.add(commonRole);
-    }
-    if (!member.roles.cache.has(personalRole.id)) {
-      await member.roles.add(personalRole);
-    }
+    if (!member.roles.cache.has(commonRole.id)) await member.roles.add(commonRole.id);
+    if (!member.roles.cache.has(personalRole.id)) await member.roles.add(personalRole.id);
   } else {
-    if (member.roles.cache.has(commonRole.id)) {
-      await member.roles.remove(commonRole);
-    }
-    if (member.roles.cache.has(personalRole.id)) {
-      await member.roles.remove(personalRole);
-    }
+    if (member.roles.cache.has(commonRole.id)) await member.roles.remove(commonRole.id);
+    if (member.roles.cache.has(personalRole.id)) await member.roles.remove(personalRole.id);
   }
   return true;
 }
 
+// ✅ member.roles.fetch() 삭제 + guild.roles.fetch()는 1회만
 async function checkAndUpdateWorkRoles(guild, silent = false) {
   const changes = [];
+
+  await guild.roles.fetch().catch(() => null);
+
   for (const userKey of ["youjung", "youngjin", "myeongjae"]) {
     const isWorking = isWorkingNow(userKey);
     const userMeta = USER_META[userKey];
@@ -357,26 +363,23 @@ async function checkAndUpdateWorkRoles(guild, silent = false) {
     const member = await guild.members.fetch(userMeta.discordId).catch(() => null);
     if (!member) continue;
 
-    const commonRole = await ensureRoleExists(guild, WORK_ROLES.common.name, WORK_ROLES.common.color);
-    const personalRole = await ensureRoleExists(guild, WORK_ROLES[userKey].name, WORK_ROLES[userKey].color);
+    const commonRoleDef = WORK_ROLES?.common;
+    const personalRoleDef = WORK_ROLES?.[userKey];
+    if (!commonRoleDef || !personalRoleDef) continue;
 
-    await guild.roles.fetch();
-    await member.roles.fetch();
+    const commonRole = await ensureRoleExists(guild, commonRoleDef.name, commonRoleDef.color);
+    const personalRole = await ensureRoleExists(guild, personalRoleDef.name, personalRoleDef.color);
 
     const hasCommonRole = member.roles.cache.has(commonRole.id);
     const hasPersonalRole = member.roles.cache.has(personalRole.id);
     const currentlyHasRoles = hasCommonRole && hasPersonalRole;
 
     if (isWorking && !currentlyHasRoles) {
-      await toggleWorkRoles(guild, userKey, true);
-      if (!silent) {
-        changes.push({ userKey, action: "start" });
-      }
+      await toggleWorkRoles(member, userKey, true);
+      if (!silent) changes.push({ userKey, action: "start" });
     } else if (!isWorking && currentlyHasRoles) {
-      await toggleWorkRoles(guild, userKey, false);
-      if (!silent) {
-        changes.push({ userKey, action: "end" });
-      }
+      await toggleWorkRoles(member, userKey, false);
+      if (!silent) changes.push({ userKey, action: "end" });
     }
   }
   return changes;
@@ -390,11 +393,8 @@ async function sendWorkAnnouncement(channel, userKey, action) {
     minute: "2-digit",
   });
 
-  if (action === "start") {
-    await channel.send(MESSAGES.work.start(userName, timeStr));
-  } else if (action === "end") {
-    await channel.send(MESSAGES.work.end(userName, timeStr));
-  }
+  if (action === "start") await channel.send(MESSAGES.work.start(userName, timeStr));
+  else if (action === "end") await channel.send(MESSAGES.work.end(userName, timeStr));
 }
 
 function getTodaySchedule() {
@@ -409,9 +409,7 @@ function getTodaySchedule() {
     if (todaySlots.length === 0) continue;
 
     const userName = userSchedule.name;
-    for (const [start, end] of todaySlots) {
-      schedule.push({ name: userName, start, end });
-    }
+    for (const [start, end] of todaySlots) schedule.push({ name: userName, start, end });
   }
 
   return schedule;
@@ -422,10 +420,7 @@ async function sendDailyScheduleSummary(channel) {
   if (schedule.length === 0) return;
 
   const lines = [MESSAGES.work.scheduleTitle];
-  for (const item of schedule) {
-    lines.push(MESSAGES.work.scheduleItem(item.name, item.start, item.end));
-  }
-
+  for (const item of schedule) lines.push(MESSAGES.work.scheduleItem(item.name, item.start, item.end));
   await channel.send(lines.join("\n"));
 }
 
@@ -440,9 +435,7 @@ function getWorkStartTimes() {
     const todaySlots = userSchedule.weeklyBusy[dayOfWeek] || [];
     if (todaySlots.length === 0) continue;
 
-    for (const [start] of todaySlots) {
-      startTimes.push({ userKey, userName: userSchedule.name, start });
-    }
+    for (const [start] of todaySlots) startTimes.push({ userKey, userName: userSchedule.name, start });
   }
 
   return startTimes;
@@ -458,7 +451,7 @@ async function sendWeatherForWorkStart(channel, userKey, userName) {
 }
 
 // =========================
-// 날씨 (/weather) + 07시 자동알림
+// 날씨 (/weather) + 자동알림
 // =========================
 async function fetchWeather(cityRaw) {
   const city = cityRaw || process.env.WEATHER_DEFAULT_CITY || "Seoul";
@@ -489,10 +482,8 @@ async function fetchWeather(cityRaw) {
     else if (feels <= 8) nags.push(MESSAGES.weather.chillyWarning);
     else if (feels >= 28) nags.push(MESSAGES.weather.hotWarning);
   }
-  if (typeof hum === "number" && hum >= 75)
-    nags.push(MESSAGES.weather.humidWarning);
-  if (typeof wind === "number" && wind >= 6)
-    nags.push(MESSAGES.weather.windyWarning);
+  if (typeof hum === "number" && hum >= 75) nags.push(MESSAGES.weather.humidWarning);
+  if (typeof wind === "number" && wind >= 6) nags.push(MESSAGES.weather.windyWarning);
 
   const nagText = nags.length ? `\n${nags.join(" ")}` : `\n${MESSAGES.weather.normalWarning}`;
 
@@ -502,20 +493,16 @@ async function fetchWeather(cityRaw) {
 // =========================
 // ready
 // =========================
-client.once("clientReady", async () => {
+// ✅ 이벤트명 수정: clientReady -> ready
+client.once("ready", async () => {
   console.log(MESSAGES.console.login(client.user.tag));
 
   const channelId = process.env.CHANNEL_ID;
   const workChannelId = process.env.WORK_CHANNEL_ID || channelId;
   const guildId = process.env.GUILD_ID;
 
-  if (!channelId) {
-    console.warn(MESSAGES.console.channelIdNotSet);
-  }
-
-  if (!guildId) {
-    console.warn(MESSAGES.console.guildIdNotSet);
-  }
+  if (!channelId) console.warn(MESSAGES.console.channelIdNotSet);
+  if (!guildId) console.warn(MESSAGES.console.guildIdNotSet);
 
   // 봇 시작 시 초기 상태 동기화
   if (guildId) {
@@ -560,9 +547,7 @@ client.once("clientReady", async () => {
       async () => {
         try {
           const workChannel = await client.channels.fetch(workChannelId).catch(() => null);
-          if (workChannel) {
-            await sendDailyScheduleSummary(workChannel);
-          }
+          if (workChannel) await sendDailyScheduleSummary(workChannel);
         } catch (e) {
           console.error(MESSAGES.console.scheduleSummaryError, e);
         }
@@ -575,7 +560,6 @@ client.once("clientReady", async () => {
   if (channelId) {
     const weatherTimes = new Set(["09:00", "12:00", "19:00", "20:00", "21:00"]);
 
-    // 각 시간대별로 cron 설정
     for (const startTime of weatherTimes) {
       const [hour, minute] = startTime.split(":").map(Number);
       const cronPattern = `${minute} ${hour} * * *`;
@@ -624,7 +608,6 @@ client.once("clientReady", async () => {
 client.on("interactionCreate", async (interaction) => {
   // ---------- 슬래시 ----------
   if (interaction.isChatInputCommand()) {
-    // /lunch
     if (interaction.commandName === "lunch") {
       const type = interaction.options.getString("type") || "lunch";
       const pool = getMealPool(type);
@@ -635,11 +618,12 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       const menu = pick(pool);
-      await interaction.reply(`${mealLabel(type)}${MESSAGES.lunch.menuSuffix} **${menu}**\n${MESSAGES.lunch.menuEnd}`);
+      await interaction.reply(
+        `${mealLabel(type)}${MESSAGES.lunch.menuSuffix} **${menu}**\n${MESSAGES.lunch.menuEnd}`
+      );
       return;
     }
 
-    // /weather
     if (interaction.commandName === "weather") {
       await interaction.deferReply();
       try {
@@ -656,7 +640,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // /nonsense
     if (interaction.commandName === "nonsense") {
       await interaction.deferReply();
 
@@ -675,7 +658,6 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // /answer (2번 틀리면 정답 공개: 본인에게만)
     if (interaction.commandName === "answer") {
       const text = interaction.options.getString("text", true);
 
@@ -719,10 +701,7 @@ client.on("interactionCreate", async (interaction) => {
       }
 
       if (result.type === "WRONG") {
-        await interaction.reply({
-          content: MESSAGES.nonsense.wrong(result.tries),
-          ephemeral: true,
-        });
+        await interaction.reply({ content: MESSAGES.nonsense.wrong(result.tries), ephemeral: true });
         return;
       }
 
@@ -737,26 +716,19 @@ client.on("interactionCreate", async (interaction) => {
       return;
     }
 
-    // /go (추천 없음, 시작시간만)
     if (interaction.commandName === "go") {
       const dayRaw = interaction.options.getString("day");
       const date = parseGoDay(dayRaw);
 
       if (!date) {
-        await interaction.reply({
-          content: MESSAGES.go.invalidDay,
-          ephemeral: true,
-        });
+        await interaction.reply({ content: MESSAGES.go.invalidDay, ephemeral: true });
         return;
       }
 
       const start = interaction.options.getString("start", true);
 
       if (!isHHMM(start) || start === "24:00") {
-        await interaction.reply({
-          content: MESSAGES.go.invalidStart,
-          ephemeral: true,
-        });
+        await interaction.reply({ content: MESSAGES.go.invalidStart, ephemeral: true });
         return;
       }
 
@@ -797,10 +769,7 @@ client.on("interactionCreate", async (interaction) => {
 
     const callerKey = userKeyFromDiscordId(interaction.user.id);
     if (!callerKey) {
-      await interaction.reply({
-        content: MESSAGES.go.notRegisteredMember,
-        ephemeral: true,
-      });
+      await interaction.reply({ content: MESSAGES.go.notRegisteredMember, ephemeral: true });
       return;
     }
 
@@ -823,10 +792,7 @@ client.on("interactionCreate", async (interaction) => {
     });
 
     if (!updated) {
-      await interaction.reply({
-        content: MESSAGES.go.proposalNotFound,
-        ephemeral: true,
-      });
+      await interaction.reply({ content: MESSAGES.go.proposalNotFound, ephemeral: true });
       return;
     }
 
