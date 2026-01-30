@@ -90,6 +90,12 @@ function ensureStoreShape(store) {
   if (!s.nonsense || typeof s.nonsense !== "object") s.nonsense = {};
   if (!s.nonsense.byChannel || typeof s.nonsense.byChannel !== "object")
     s.nonsense.byChannel = {};
+
+  // ✅ 추가: 근무 상태 캐시(공지 스팸 방지)
+  if (!s.work || typeof s.work !== "object") s.work = {};
+  if (!s.work.last || typeof s.work.last !== "object") s.work.last = {};
+  // s.work.last: { [userKey]: boolean }
+
   return s;
 }
 
@@ -390,73 +396,67 @@ async function toggleWorkRoles(guild, userKey, shouldHaveRoles) {
     guild,
     WORK_ROLES.common.name,
     WORK_ROLES.common.color
-  );
+  ).catch(() => null);
+
   const personalRole = await ensureRoleExists(
     guild,
     WORK_ROLES[userKey].name,
     WORK_ROLES[userKey].color
-  );
+  ).catch(() => null);
 
-  // ⚠️ 역할 토글 실패 시: 서버에서 봇 역할 권한(Manage Roles) + 역할 순서(봇 역할이 위) 필요
-  if (shouldHaveRoles) {
-    if (!member.roles.cache.has(commonRole.id)) {
-      await member.roles.add(commonRole).catch(() => null);
+  if (!commonRole || !personalRole) return false;
+
+  try {
+    if (shouldHaveRoles) {
+      const toAdd = [];
+      if (!member.roles.cache.has(commonRole.id)) toAdd.push(commonRole);
+      if (!member.roles.cache.has(personalRole.id)) toAdd.push(personalRole);
+      if (toAdd.length) await member.roles.add(toAdd);
+    } else {
+      const toRemove = [];
+      if (member.roles.cache.has(commonRole.id)) toRemove.push(commonRole);
+      if (member.roles.cache.has(personalRole.id)) toRemove.push(personalRole);
+      if (toRemove.length) await member.roles.remove(toRemove);
     }
-    if (!member.roles.cache.has(personalRole.id)) {
-      await member.roles.add(personalRole).catch(() => null);
-    }
-  } else {
-    if (member.roles.cache.has(commonRole.id)) {
-      await member.roles.remove(commonRole).catch(() => null);
-    }
-    if (member.roles.cache.has(personalRole.id)) {
-      await member.roles.remove(personalRole).catch(() => null);
-    }
+    return true;
+  } catch (e) {
+    // 권한 없으면 여기로 옴. 공지 로직엔 영향 X
+    console.error("[toggleWorkRoles] failed:", e?.code, e?.message);
+    return false;
   }
-  return true;
 }
 
 async function checkAndUpdateWorkRoles(guild, silent = false) {
+  // ✅ 공지는 상태 변화가 있을 때만 발생
   const changes = [];
 
-  // roles cache 업데이트(선택)
-  try {
-    await guild.roles.fetch();
-  } catch {}
+  await withStore(async (store) => {
+    const keys = ["youjung", "youngjin", "myeongjae"];
 
-  for (const userKey of ["youjung", "youngjin", "myeongjae"]) {
-    const isWorking = isWorkingNow(userKey);
-    const userMeta = USER_META[userKey];
-    if (!userMeta) continue;
+    for (const userKey of keys) {
+      const nowWorking = isWorkingNow(userKey);
+      const prevWorking = store.work?.last?.[userKey];
 
-    // 특정 멤버만 fetch (GuildMembers 인텐트 없어도 REST로는 보통 가능)
-    const member = await guild.members.fetch(userMeta.discordId).catch(() => null);
-    if (!member) continue;
+      // 최초 1회는 기준만 잡고 공지하지 않음(스팸 방지)
+      if (typeof prevWorking !== "boolean") {
+        store.work.last[userKey] = nowWorking;
+        continue;
+      }
 
-    const commonRole = await ensureRoleExists(
-      guild,
-      WORK_ROLES.common.name,
-      WORK_ROLES.common.color
-    );
-    const personalRole = await ensureRoleExists(
-      guild,
-      WORK_ROLES[userKey].name,
-      WORK_ROLES[userKey].color
-    );
+      // 변화 없으면 아무 것도 안 함
+      if (nowWorking === prevWorking) continue;
 
-    // ❌ member.roles.fetch()는 v14에 없음 (TypeError 원인)
-    const hasCommonRole = member.roles.cache.has(commonRole.id);
-    const hasPersonalRole = member.roles.cache.has(personalRole.id);
-    const currentlyHasRoles = hasCommonRole && hasPersonalRole;
+      // ✅ 상태 변화 발생: store 갱신 + 공지 등록
+      store.work.last[userKey] = nowWorking;
+      if (!silent) {
+        changes.push({ userKey, action: nowWorking ? "start" : "end" });
+      }
 
-    if (isWorking && !currentlyHasRoles) {
-      await toggleWorkRoles(guild, userKey, true);
-      if (!silent) changes.push({ userKey, action: "start" });
-    } else if (!isWorking && currentlyHasRoles) {
-      await toggleWorkRoles(guild, userKey, false);
-      if (!silent) changes.push({ userKey, action: "end" });
+      // 역할 토글은 "부가 기능" (권한 없어도 공지 정상)
+      // 실패해도 변화/공지에는 영향 없음
+      await toggleWorkRoles(guild, userKey, nowWorking);
     }
-  }
+  });
 
   return changes;
 }
