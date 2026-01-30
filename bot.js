@@ -10,6 +10,7 @@ import {
   ActionRowBuilder,
   ButtonBuilder,
   ButtonStyle,
+  EmbedBuilder,
 } from "discord.js";
 
 import { FOOD_CATEGORIES, NONSENSE_QUIZ, SCHEDULE, WORK_ROLES } from "./data.js";
@@ -526,10 +527,30 @@ function getWorkStartTimes() {
   return startTimes;
 }
 
+async function fetchWeatherTempOnly(cityRaw) {
+  const city = cityRaw || process.env.WEATHER_DEFAULT_CITY || "Seoul";
+  const key = process.env.WEATHER_API_KEY;
+  const units = process.env.WEATHER_UNITS || "metric";
+
+  if (!key) throw new Error(MESSAGES.weatherDetail.apiKeyError);
+
+  const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(
+    city
+  )}&appid=${key}&units=${units}&lang=kr`;
+
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Weather API error: ${res.status}`);
+  const w = await res.json();
+
+  const temp = Math.round(w.main?.temp ?? 0);
+  const feels = Math.round(w.main?.feels_like ?? temp);
+  return { temp, feels };
+}
+
 async function sendWeatherForWorkStart(channel, userKey, userName) {
   try {
-    const msg = await fetchWeather(process.env.WEATHER_DEFAULT_CITY);
-    await channel.send(`${MESSAGES.work.weatherPrefix(userName)}\n${msg}`);
+    const { temp, feels } = await fetchWeatherTempOnly(process.env.WEATHER_DEFAULT_CITY);
+    await channel.send(MESSAGES.work.weatherTempOnly(userName, temp, feels));
   } catch (e) {
     console.error(MESSAGES.console.weatherError, e);
   }
@@ -573,6 +594,184 @@ async function fetchWeather(cityRaw) {
   const nagText = nags.length ? `\n${nags.join(" ")}` : `\n${MESSAGES.weather.normalWarning}`;
 
   return MESSAGES.weatherDetail.weatherFormat(name, desc, temp, feels, hum, wind) + nagText;
+}
+
+// =========================
+// 사주 (/사주) API + Embed
+// =========================
+const SAJU_BIRTH_REGEX = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/;
+
+function validateSajuBirth(birthStr) {
+  if (!birthStr || typeof birthStr !== "string") return false;
+  const trimmed = birthStr.trim();
+  if (!SAJU_BIRTH_REGEX.test(trimmed)) return false;
+  const [datePart, timePart] = trimmed.split("T");
+  const [y, m, d] = datePart.split("-").map(Number);
+  const [hh, mm, ss] = timePart.split(":").map(Number);
+  if (m < 1 || m > 12 || d < 1 || d > 31) return false;
+  if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59) return false;
+  const lastDay = new Date(y, m, 0).getDate();
+  if (d > lastDay) return false;
+  return true;
+}
+
+async function fetchSajuFortune({ birth, gender, city, midnightType, calendar }) {
+  const key = process.env.SAJU_API_KEY;
+  if (!key) return { ok: false, error: MESSAGES.saju.apiKeyError };
+
+  const params = new URLSearchParams();
+  params.set("birth", birth.trim());
+  params.set("gender", gender);
+  if (city && String(city).trim()) params.set("city", String(city).trim());
+  if (midnightType !== undefined && midnightType !== null) params.set("midnightType", String(midnightType));
+  if (calendar && String(calendar).trim()) params.set("calendar", String(calendar).trim());
+
+  const url = `https://api.ablecity.kr/api/v1/saju/fortune?${params.toString()}`;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+  try {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      const text = await res.text();
+      let errMsg = `API ${res.status}`;
+      try {
+        const j = JSON.parse(text);
+        if (j.message) errMsg = j.message;
+      } catch {}
+      return { ok: false, error: errMsg };
+    }
+
+    const body = await res.json();
+    const data = body?.data ?? body;
+    const sinsal = body?.data?.sinsal ?? body?.sinsal ?? null;
+    return { ok: true, data, sinsal, raw: body };
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e.name === "AbortError") return { ok: false, error: "요청 시간 초과" };
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
+function truncateField(str, maxLen = 1024) {
+  const s = String(str ?? "").trim();
+  if (s.length <= maxLen) return s;
+  return s.slice(0, maxLen - 3) + "...";
+}
+
+function buildSajuEmbed(body, birthLabel, hasSinsal) {
+  const data = body.data ?? body;
+  const embed = new EmbedBuilder();
+
+  const title = `사주: ${birthLabel}`;
+  embed.setTitle(truncateField(title, 256));
+
+  const parts = [];
+
+  const year = data.year;
+  const month = data.month;
+  const day = data.day;
+  const hour = data.hour;
+  if (year || month || day || hour) {
+    const yStr = year?.hangul || year?.hanja || "-";
+    const mStr = month?.hangul || month?.hanja || "-";
+    const dStr = day?.hangul || day?.hanja || "-";
+    const hStr = hour?.hangul || hour?.hanja || "-";
+    parts.push(`**사주 4기둥**\n년 ${yStr} / 월 ${mStr} / 일 ${dStr} / 시 ${hStr}`);
+  }
+
+  if (data.fortune != null) {
+    parts.push(`**종합 지표** ${data.fortune}`);
+  }
+
+  if (data.five_kor && typeof data.five_kor === "object") {
+    const fiveLines = Object.entries(data.five_kor).map(([k, v]) => `${k}: ${v}`).join(", ");
+    parts.push(`**오행** ${truncateField(fiveLines, 500)}`);
+  } else if (data.five_star) {
+    parts.push(`**오행** ${truncateField(String(data.five_star), 500)}`);
+  }
+
+  if (data.twelve_growth_kor) {
+    const tw = data.twelve_growth_kor;
+    const twStr = typeof tw === "object" ? [tw.year, tw.month, tw.day, tw.hour].filter(Boolean).join(" / ") : String(tw);
+    parts.push(`**십이운성** ${truncateField(twStr, 500)}`);
+  }
+
+  if (data.strength) {
+    parts.push(`**일간 강약** ${String(data.strength)}`);
+  }
+
+  if (data.geokguk && typeof data.geokguk === "object") {
+    const gk = data.geokguk;
+    const gkName = gk.geok_kor || gk.geok || null;
+    if (gkName) parts.push(`**격국** ${truncateField(gkName, 300)}`);
+  }
+
+  if (data.yongshin) {
+    const ys = data.yongshin;
+    const primary = ys?.primary ?? ys?.primary_kor ?? ys?.primaryKor;
+    const secondary = ys?.secondary ?? ys?.secondary_kor ?? ys?.secondaryKor;
+    const ysParts = [primary, secondary].filter(Boolean).map(String);
+    if (ysParts.length) parts.push(`**용신** ${truncateField(ysParts.join(" / "), 300)}`);
+  }
+
+  const br = data.branch_relations_kor;
+  if (br && typeof br === "object") {
+    const brLines = [];
+    const pushIf = (label, arr) => {
+      if (Array.isArray(arr) && arr.length) brLines.push(`${label}: ${arr.join(", ")}`);
+    };
+    pushIf("합", br.harmonies);
+    pushIf("파", br.breaks);
+    pushIf("삼합", br.three_harmonies);
+    pushIf("형", br.punishments);
+    pushIf("해", br.harms);
+    pushIf("충", br.clashes);
+    if (brLines.length) parts.push(`**지지 관계**\n${truncateField(brLines.join("\n"), 800)}`);
+  }
+
+  if (Array.isArray(data.big_luck) && data.big_luck.length) {
+    const maxLuck = 5;
+    const luckLines = data.big_luck.slice(0, maxLuck).map((p) => {
+      const range = p.age_range ?? p.year_range ?? "";
+      const pillar = p.pillar_kor ?? p.pillar ?? "";
+      return `${range} ${pillar}`.trim();
+    });
+    parts.push(`**대운**\n${truncateField(luckLines.join("\n"), 800)}`);
+  }
+
+  if (data.lucky && typeof data.lucky === "object") {
+    const l = data.lucky;
+    const luckyParts = [];
+    if (l.good_num) luckyParts.push(`길한 수: ${l.good_num}`);
+    if (l.bad_num) luckyParts.push(`흉한 수: ${l.bad_num}`);
+    if (l.good_dir) luckyParts.push(`길한 방위: ${l.good_dir}`);
+    if (l.bad_dir) luckyParts.push(`흉한 방위: ${l.bad_dir}`);
+    if (l.need_elem_kor) luckyParts.push(`필요 오행: ${l.need_elem_kor}`);
+    if (Array.isArray(l.good_colors)) luckyParts.push(`길한 색: ${l.good_colors.join(", ")}`);
+    else if (l.good_colors) luckyParts.push(`길한 색: ${String(l.good_colors)}`);
+    if (Array.isArray(l.bad_color)) luckyParts.push(`흉한 색: ${l.bad_color.join(", ")}`);
+    else if (l.bad_color) luckyParts.push(`흉한 색: ${String(l.bad_color)}`);
+    if (luckyParts.length) parts.push(`**행운 요소**\n${truncateField(luckyParts.join(" | "), 800)}`);
+  }
+
+  const fullDesc = parts.join("\n\n");
+  embed.setDescription(truncateField(fullDesc, 4096));
+
+  if (hasSinsal) {
+    embed.setFooter({ text: MESSAGES.saju.sinsalBeta });
+  }
+
+  return embed;
 }
 
 // =========================
@@ -640,33 +839,33 @@ client.once("clientReady", async () => {
     );
   }
 
-  // 근무 시작 시간에 맞춰 날씨 알림
+  // 출근 30분 전 날씨 알림 (현재·체감 온도만)
   if (channelId) {
-    const weatherTimes = new Set(["09:00", "12:00", "19:00", "20:00", "21:00"]);
+    cron.schedule(
+      "30 8,11,18,19,20 * * *",
+      async () => {
+        try {
+          const kst = new Date(Date.now() + 9 * 60 * 60 * 1000);
+          const totalMin = kst.getUTCHours() * 60 + kst.getUTCMinutes();
+          const in30 = totalMin + 30;
+          const targetHour = Math.floor(in30 / 60) % 24;
+          const targetMin = in30 % 60;
+          const targetStart = `${String(targetHour).padStart(2, "0")}:${String(targetMin).padStart(2, "0")}`;
 
-    for (const startTime of weatherTimes) {
-      const [hour, minute] = startTime.split(":").map(Number);
-      const cronPattern = `${minute} ${hour} * * *`;
+          const ch = await client.channels.fetch(channelId);
+          const todayStartTimes = getWorkStartTimes();
 
-      cron.schedule(
-        cronPattern,
-        async () => {
-          try {
-            const ch = await client.channels.fetch(channelId);
-            const todayStartTimes = getWorkStartTimes();
-
-            for (const { userKey, userName, start } of todayStartTimes) {
-              if (start === startTime) {
-                await sendWeatherForWorkStart(ch, userKey, userName);
-              }
+          for (const { userKey, userName, start } of todayStartTimes) {
+            if (start === targetStart) {
+              await sendWeatherForWorkStart(ch, userKey, userName);
             }
-          } catch (e) {
-            console.error(MESSAGES.console.weatherError, e);
           }
-        },
-        { timezone: "Asia/Seoul" }
-      );
-    }
+        } catch (e) {
+          console.error(MESSAGES.console.weatherError, e);
+        }
+      },
+      { timezone: "Asia/Seoul" }
+    );
   }
 
   // 15:00 넌센스 자동 출제
@@ -723,6 +922,51 @@ client.on("interactionCreate", async (interaction) => {
         console.error(e);
         await interaction.editReply(MESSAGES.weather.error);
       }
+      return;
+    }
+
+    // /사주
+    if (interaction.commandName === MESSAGES.commands.saju.name) {
+      const birthRaw = interaction.options.getString("birth", true);
+      const gender = interaction.options.getString("gender", true);
+      const city = interaction.options.getString("city");
+      const calendar = interaction.options.getString("calendar");
+      const midnightType = interaction.options.getInteger("midnighttype");
+
+      if (!validateSajuBirth(birthRaw)) {
+        await interaction.reply({
+          content: MESSAGES.saju.invalidBirth,
+          ephemeral: true,
+        });
+        return;
+      }
+      if (gender !== "male" && gender !== "female") {
+        await interaction.reply({
+          content: MESSAGES.saju.invalidGender,
+          ephemeral: true,
+        });
+        return;
+      }
+
+      await interaction.deferReply();
+
+      const birth = birthRaw.trim();
+      const result = await fetchSajuFortune({
+        birth,
+        gender,
+        city: city?.trim(),
+        midnightType: midnightType ?? 0,
+        calendar: calendar?.trim() || "solar",
+      });
+
+      if (!result.ok) {
+        await interaction.editReply(result.error || MESSAGES.saju.apiError);
+        return;
+      }
+
+      const hasSinsal = result.sinsal != null;
+      const embed = buildSajuEmbed(result.raw ?? result.data, birth, hasSinsal);
+      await interaction.editReply({ embeds: [embed] });
       return;
     }
 

@@ -56,15 +56,63 @@ const commands = [
     .addStringOption((o) =>
       o.setName("day").setDescription(MESSAGES.commands.go.dayDescription).setRequired(false)
     ),
+
+  // /사주
+  new SlashCommandBuilder()
+    .setName(MESSAGES.commands.saju.name)
+    .setDescription(MESSAGES.commands.saju.description)
+    .addStringOption((o) =>
+      o
+        .setName("birth")
+        .setDescription(MESSAGES.commands.saju.birthDescription)
+        .setRequired(true)
+    )
+    .addStringOption((o) =>
+      o
+        .setName("gender")
+        .setDescription(MESSAGES.commands.saju.genderDescription)
+        .setRequired(true)
+        .addChoices(
+          { name: MESSAGES.commands.saju.genderMale, value: "male" },
+          { name: MESSAGES.commands.saju.genderFemale, value: "female" }
+        )
+    )
+    .addStringOption((o) =>
+      o
+        .setName("city")
+        .setDescription(MESSAGES.commands.saju.cityDescription)
+        .setRequired(false)
+    )
+    .addStringOption((o) =>
+      o
+        .setName("calendar")
+        .setDescription(MESSAGES.commands.saju.calendarDescription)
+        .setRequired(false)
+        .addChoices(
+          { name: MESSAGES.commands.saju.calendarSolar, value: "solar" },
+          { name: MESSAGES.commands.saju.calendarLunar, value: "lunar" },
+          { name: MESSAGES.commands.saju.calendarLeap, value: "leap" }
+        )
+    )
+    .addIntegerOption((o) =>
+      o
+        .setName("midnighttype")
+        .setDescription(MESSAGES.commands.saju.midnightTypeDescription)
+        .setRequired(false)
+        .addChoices(
+          { name: MESSAGES.commands.saju.midnightType0, value: 0 },
+          { name: MESSAGES.commands.saju.midnightType1, value: 1 }
+        )
+    ),
 ].map((c) => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN);
 
 if (!process.env.CLIENT_ID) throw new Error(MESSAGES.console.clientIdError);
-if (!process.env.CHANNEL_ID) throw new Error(MESSAGES.console.channelIdError);
+if (!process.env.GUILD_ID) throw new Error(MESSAGES.console.guildIdError);
 
 await rest.put(
-  Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.CHANNEL_ID),
+  Routes.applicationGuildCommands(process.env.CLIENT_ID, process.env.GUILD_ID),
   { body: commands }
 );
 
